@@ -218,6 +218,10 @@ _ON_GFX9 = any(arch in _GCN_ARCH for arch in ["gfx90a", "gfx942", "gfx950"])
 _ON_GFX90A = "gfx90a" in _GCN_ARCH
 _ON_GFX942 = "gfx942" in _GCN_ARCH
 _ON_GFX950 = "gfx950" in _GCN_ARCH
+# RDNA4 (e.g. gfx1201 / Radeon R9700). Wave32-native, WMMA 16x16x16, OCP fp8.
+# AITER's Triton kernels (pa_mqa_logits, fp8_mqa_logits) are patched for this
+# arch, so it is treated as a first-class AITER target alongside MI3XX.
+_ON_GFX1201 = "gfx1201" in _GCN_ARCH
 
 
 def _capability_from_gcn_arch(gcn_arch: str) -> tuple[int, int] | None:
@@ -329,6 +333,10 @@ def on_gfx942() -> bool:
 
 def on_gfx950() -> bool:
     return _ON_GFX950
+
+
+def on_gfx1201() -> bool:
+    return _ON_GFX1201
 
 
 # Enable HIP online tuning early, before hipBLASLt initializes.
