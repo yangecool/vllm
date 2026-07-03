@@ -412,17 +412,18 @@ def rocm_fp8_paged_mqa_logits(
         `torch.float32`.
     """
     from vllm._aiter_ops import rocm_aiter_ops
+    from vllm.platforms.rocm import on_gfx1201
 
     aiter_paged_mqa_logits_module = None
     # if rocm_aiter_ops.is_enabled():
     batch_size, next_n = q_fp8.shape[:2]
     block_size = kv_cache_fp8.shape[1]
 
-    if rocm_aiter_ops.is_enabled():
+    if rocm_aiter_ops.is_enabled() or on_gfx1201():
         aiter_paged_mqa_logits_module = paged_mqa_logits_module()
 
     if aiter_paged_mqa_logits_module is not None:
-        if _ON_GFX942 or _ON_GFX950 or _ON_GFX1201:
+        if _ON_GFX942 or _ON_GFX950:
             deepgemm_fp8_paged_mqa_logits = (
                 aiter_paged_mqa_logits_module.deepgemm_fp8_paged_mqa_logits
             )
