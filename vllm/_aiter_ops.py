@@ -105,9 +105,16 @@ def is_aiter_found_and_supported() -> bool:
     VLLM_ROCM_USE_AITER=0, while preventing unwanted JIT warnings for auto-discovery.
     """
     if current_platform.is_rocm() and IS_AITER_FOUND:
-        from vllm.platforms.rocm import on_mi3xx
+        from vllm.platforms.rocm import on_gfx1201, on_mi3xx
 
-        return on_mi3xx()
+        # MI3XX (gfx942/gfx950) is the primary AITER target. gfx1201 (RDNA4)
+        # is also supported via AITER's Triton kernels (pa_mqa_logits,
+        # fp8_mqa_logits), which are patched for Wave32/WMMA-16x16. Including
+        # it here lets register_ops_once() register the custom ops (e.g.
+        # rocm_aiter_sparse_attn_indexer) so the ROCm forward path can dispatch
+        # to them; the ops internally fall back to Triton/Torch when AITER is
+        # not explicitly enabled via VLLM_ROCM_USE_AITER.
+        return on_mi3xx() or on_gfx1201()
     return False
 
 
