@@ -127,11 +127,16 @@ ARG COMMON_WORKDIR
 WORKDIR ${COMMON_WORKDIR}
 COPY vllm ${COMMON_WORKDIR}/vllm
 
-# Auto-detect git hash from copied vllm/.git; fall back to "unknown".
+# Auto-detect git hash from copied vllm/.git (no git binary needed).
 # Writes version to /tmp/vllm_version for child stages to consume.
 ARG VLLM_BASE_VERSION
 RUN cd ${COMMON_WORKDIR}/vllm \
-    && HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown") \
+    && HASH=$(head -1 .git/HEAD | awk '{print $2}') \
+    && if [ -f ".git/$HASH" ]; then \
+         HASH=$(head -c 10 ".git/$HASH"); \
+       else \
+         HASH=$(echo "$HASH" | head -c 10); \
+       fi \
     && echo "${VLLM_BASE_VERSION}+rocm.gfx1201.aiter.hvat.git${HASH}" > /tmp/vllm_version \
     && echo "vLLM version: $(cat /tmp/vllm_version)"
 
