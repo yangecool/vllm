@@ -7,15 +7,15 @@
 #
 # Build (context = the vllm source tree, with aiter as a sibling):
 #
-#   VLLM_COMMIT=$(cd vllm && git rev-parse --short HEAD)
 #   docker build -f docker/Dockerfile.gfx1201_full \
 #       -t vllm-openai-rocm:v0.24.0_gfx1201_v1 \
 #       --build-arg BASE_IMAGE=vllm/vllm-openai-rocm:v0.24.0-base \
 #       --build-arg AITER_ROCM_ARCH="gfx942;gfx950;gfx1201" \
-#       --build-arg VLLM_BASE_VERSION=0.24.0 \
-#       --build-arg VLLM_GIT_COMMIT=${VLLM_COMMIT} \
 #       --progress=plain \
 #       /home/yangecool/WorkSpace/Code/vLLM-v4-Craft
+#
+# Git hash is auto-detected from the copied vllm/.git.
+# Override base version with: --build-arg VLLM_BASE_VERSION=0.24.0
 #
 # Wheel filename (example):
 #   vllm-0.24.0+rocm.gfx1201.aiter.hvat.git76d9eec2f-cp312-cp312-linux_x86_64.whl
@@ -27,15 +27,9 @@ ARG BASE_IMAGE=vllm/vllm-openai-rocm:v0.24.0-base
 ARG COMMON_WORKDIR=/app
 ARG AITER_ROCM_ARCH=gfx942;gfx950;gfx1201
 
-# Wheel version naming: vllm-{BASE_VERSION}+rocm.gfx1201.git{COMMIT}-cp312-...
-# e.g. vllm-0.24.0+rocm.gfx1201.aiter.hvat.git76d9eec2f-cp312-cp312-linux_x86_64.whl
-#
-# Build with:
-#   --build-arg VLLM_BASE_VERSION=0.24.0 \
-#   --build-arg VLLM_GIT_COMMIT=$(cd vllm && git rev-parse --short HEAD)
+# Wheel version: vllm-{BASE}+rocm.gfx1201.aiter.hvat.git{hash}-cp312-...
+# Git hash is auto-detected from the copied vllm/.git at build time.
 ARG VLLM_BASE_VERSION=0.24.0
-ARG VLLM_GIT_COMMIT=unknown
-ARG VLLM_PRETEND_VERSION=${VLLM_BASE_VERSION}+rocm.gfx1201.aiter.hvat.git${VLLM_GIT_COMMIT}
 
 ########################################################################
 # base — install build tools (uv, ccache, mold) on top of v0.24.0-base.
@@ -133,6 +127,14 @@ ARG COMMON_WORKDIR
 WORKDIR ${COMMON_WORKDIR}
 COPY vllm ${COMMON_WORKDIR}/vllm
 
+# Auto-detect git hash from copied vllm/.git; fall back to "unknown".
+# Writes version to /tmp/vllm_version for child stages to consume.
+ARG VLLM_BASE_VERSION
+RUN cd ${COMMON_WORKDIR}/vllm \
+    && HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown") \
+    && echo "${VLLM_BASE_VERSION}+rocm.gfx1201.aiter.hvat.git${HASH}" > /tmp/vllm_version \
+    && echo "vLLM version: $(cat /tmp/vllm_version)"
+
 ########################################################################
 # rust-build — compile the vllm-rs frontend (build_rust.sh installs rustup).
 ########################################################################
@@ -152,18 +154,16 @@ RUN /tmp/install_protoc.sh && rm /tmp/install_protoc.sh
 ENV CARGO_BUILD_JOBS=4
 ENV CARGO_NET_RETRY=10
 ENV RUSTUP_MAX_RETRIES=10
-# vllm/.git is excluded by .dockerignore, so setuptools-scm cannot infer the
-# version when build_rust.py runs. Use the same version as the final wheel.
-ARG VLLM_PRETEND_VERSION
-ENV SETUPTOOLS_SCM_PRETEND_VERSION=${VLLM_PRETEND_VERSION}
-
+# Read pre-computed version (git hash auto-detected in fetch_vllm).
 RUN --mount=type=cache,id=vllm-rocm-uv,target=/root/.cache/uv \
     cd ${COMMON_WORKDIR}/vllm \
+    && export SETUPTOOLS_SCM_PRETEND_VERSION=$(cat /tmp/vllm_version) \
     && uv pip install --system -r requirements/build/rust.txt
 
 RUN --mount=type=cache,id=vllm-rocm-cargo-registry,target=/root/.cargo/registry,sharing=locked \
     --mount=type=cache,id=vllm-rocm-cargo-git,target=/root/.cargo/git,sharing=locked \
     cd ${COMMON_WORKDIR}/vllm \
+    && export SETUPTOOLS_SCM_PRETEND_VERSION=$(cat /tmp/vllm_version) \
     && bash build_rust.sh \
     && test -x vllm/vllm-rs
 
@@ -185,14 +185,14 @@ COPY vllm/cmake cmake/
 COPY vllm/csrc csrc/
 COPY vllm/vllm/envs.py vllm/envs.py
 COPY vllm/vllm/__init__.py vllm/__init__.py
+COPY --from=fetch_vllm /tmp/vllm_version /tmp/vllm_version
 
 ENV VLLM_TARGET_DEVICE=rocm
-ARG VLLM_PRETEND_VERSION
-ENV SETUPTOOLS_SCM_PRETEND_VERSION=${VLLM_PRETEND_VERSION}
 
 RUN --mount=type=bind,source=vllm/pyproject.toml,target=${COMMON_WORKDIR}/vllm/pyproject.toml \
     --mount=type=cache,id=vllm-rocm-ccache,target=/root/.cache/ccache \
     export CCACHE_BASEDIR="$PWD" \
+    && export SETUPTOOLS_SCM_PRETEND_VERSION=$(cat /tmp/vllm_version) \
     && (ccache --zero-stats || true) \
     && EFFECTIVE_MAX_JOBS="${MAX_JOBS:-$(nproc)}" \
     && echo "Building ROCm native extension wheel with MAX_JOBS=${EFFECTIVE_MAX_JOBS}" \
@@ -207,10 +207,6 @@ RUN --mount=type=bind,source=vllm/pyproject.toml,target=${COMMON_WORKDIR}/vllm/p
 FROM fetch_vllm AS build_vllm
 ARG COMMON_WORKDIR
 ENV VLLM_TARGET_DEVICE=rocm
-# vllm/.git is excluded by .dockerignore, so setuptools-scm can't detect the
-# version. Use the same version as the final wheel.
-ARG VLLM_PRETEND_VERSION
-ENV SETUPTOOLS_SCM_PRETEND_VERSION=${VLLM_PRETEND_VERSION}
 
 COPY --from=csrc-build ${COMMON_WORKDIR}/vllm/dist /precompiled-wheels
 COPY --from=rust-build ${COMMON_WORKDIR}/vllm/vllm/vllm-rs ${COMMON_WORKDIR}/vllm/vllm/vllm-rs
@@ -218,6 +214,7 @@ COPY --from=rust-build ${COMMON_WORKDIR}/vllm/vllm/_rust_*.so ${COMMON_WORKDIR}/
 
 RUN --mount=type=cache,id=vllm-rocm-uv,target=/root/.cache/uv \
     cd vllm \
+    && export SETUPTOOLS_SCM_PRETEND_VERSION=$(cat /tmp/vllm_version) \
     && uv pip install --system -r requirements/rocm.txt \
     && export VLLM_USE_PRECOMPILED=1 \
     && export VLLM_PRECOMPILED_WHEEL_LOCATION="$(ls /precompiled-wheels/*.whl)" \
