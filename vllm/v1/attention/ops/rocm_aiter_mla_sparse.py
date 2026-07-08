@@ -1930,6 +1930,9 @@ def _decode_cu_count() -> int:
     try:
         return torch.cuda.get_device_properties(0).multi_processor_count
     except Exception:
+        from vllm.platforms.rocm import on_gfx1201
+        if on_gfx1201():
+            return 48  # gfx1201 / Radeon R9700
         return 256  # For gfx950 arch, gated behind a fallback path for other archs.
 
 
@@ -2099,43 +2102,7 @@ def _rocm_sparse_attn_decode_ragged_triton(
     comb_dim = nope_head_dim + rope_head_dim
     is_fnuz = current_platform.is_fp8_fnuz()
 
-    if not _ON_GFX950:  # Fallback path for un-tuned architectures.
-        block_k = 16 if head_dim >= 256 else 32
-        _sparse_attn_decode_ragged_kernel[(num_queries, heads_blocks)](
-            q,
-            main_cache,
-            main_indices,
-            main_indptr,
-            extra_cache,
-            extra_indices,
-            extra_indptr,
-            attn_sink,
-            out,
-            q.stride(0),
-            q.stride(1),
-            out.stride(0),
-            out.stride(1),
-            main_cache.stride(0),
-            extra_cache.stride(0),
-            main_cache.shape[0] * main_cache.shape[1],
-            extra_cache.shape[0] * extra_cache.shape[1],
-            main_cache.shape[1],
-            extra_cache.shape[1],
-            scale,
-            num_heads,
-            HAS_ATTN_SINK=has_attn_sink,
-            HAS_EXTRA=has_extra,
-            NOPE_DIM=nope_head_dim,
-            NOPE_BLOCK=nope_block,
-            ROPE_DIM=rope_head_dim,
-            IS_FNUZ_MAIN=is_fnuz,
-            IS_FNUZ_EXTRA=False,
-            BLOCK_H=block_h,
-            BLOCK_K=block_k,
-            num_warps=8,
-        )
-        return out
-
+    # All ROCm architectures use split-K decode (partial + reduce).
     block_k = 32  # KV tokens walked per split-K iteration. Tuned on gfx950.
     # Average per-query segment lengths, read sync-free from the ragged index
     # sizes, let the split heuristic avoid over-splitting
