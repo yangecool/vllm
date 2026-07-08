@@ -7,12 +7,18 @@
 #
 # Build (context = the vllm source tree, with aiter as a sibling):
 #
+#   VLLM_COMMIT=$(cd vllm && git rev-parse --short HEAD)
 #   docker build -f docker/Dockerfile.gfx1201_full \
 #       -t vllm-openai-rocm:v0.24.0_gfx1201_v1 \
 #       --build-arg BASE_IMAGE=vllm/vllm-openai-rocm:v0.24.0-base \
 #       --build-arg AITER_ROCM_ARCH="gfx942;gfx950;gfx1201" \
+#       --build-arg VLLM_BASE_VERSION=0.24.0 \
+#       --build-arg VLLM_GIT_COMMIT=${VLLM_COMMIT} \
 #       --progress=plain \
 #       /home/yangecool/WorkSpace/Code/vLLM-v4-Craft
+#
+# Wheel filename (example):
+#   vllm-0.24.0+rocm.gfx1201.aiter.hvat.git76d9eec2f-cp312-cp312-linux_x86_64.whl
 #
 # The context root contains both `aiter/` and `vllm/` (this Dockerfile lives
 # in vllm/docker/, so the context is one level above vllm/).
@@ -20,6 +26,16 @@
 ARG BASE_IMAGE=vllm/vllm-openai-rocm:v0.24.0-base
 ARG COMMON_WORKDIR=/app
 ARG AITER_ROCM_ARCH=gfx942;gfx950;gfx1201
+
+# Wheel version naming: vllm-{BASE_VERSION}+rocm.gfx1201.git{COMMIT}-cp312-...
+# e.g. vllm-0.24.0+rocm.gfx1201.aiter.hvat.git76d9eec2f-cp312-cp312-linux_x86_64.whl
+#
+# Build with:
+#   --build-arg VLLM_BASE_VERSION=0.24.0 \
+#   --build-arg VLLM_GIT_COMMIT=$(cd vllm && git rev-parse --short HEAD)
+ARG VLLM_BASE_VERSION=0.24.0
+ARG VLLM_GIT_COMMIT=unknown
+ARG VLLM_PRETEND_VERSION=${VLLM_BASE_VERSION}+rocm.gfx1201.aiter.hvat.git${VLLM_GIT_COMMIT}
 
 ########################################################################
 # base — install build tools (uv, ccache, mold) on top of v0.24.0-base.
@@ -137,8 +153,9 @@ ENV CARGO_BUILD_JOBS=4
 ENV CARGO_NET_RETRY=10
 ENV RUSTUP_MAX_RETRIES=10
 # vllm/.git is excluded by .dockerignore, so setuptools-scm cannot infer the
-# version when build_rust.py runs. Pretend the same version used downstream.
-ENV SETUPTOOLS_SCM_PRETEND_VERSION="0.24.1.dev0+rocm.gfx1201"
+# version when build_rust.py runs. Use the same version as the final wheel.
+ARG VLLM_PRETEND_VERSION
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=${VLLM_PRETEND_VERSION}
 
 RUN --mount=type=cache,id=vllm-rocm-uv,target=/root/.cache/uv \
     cd ${COMMON_WORKDIR}/vllm \
@@ -170,7 +187,8 @@ COPY vllm/vllm/envs.py vllm/envs.py
 COPY vllm/vllm/__init__.py vllm/__init__.py
 
 ENV VLLM_TARGET_DEVICE=rocm
-ENV SETUPTOOLS_SCM_PRETEND_VERSION="0.0.0+rocm.csrc.build"
+ARG VLLM_PRETEND_VERSION
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=${VLLM_PRETEND_VERSION}
 
 RUN --mount=type=bind,source=vllm/pyproject.toml,target=${COMMON_WORKDIR}/vllm/pyproject.toml \
     --mount=type=cache,id=vllm-rocm-ccache,target=/root/.cache/ccache \
@@ -190,8 +208,9 @@ FROM fetch_vllm AS build_vllm
 ARG COMMON_WORKDIR
 ENV VLLM_TARGET_DEVICE=rocm
 # vllm/.git is excluded by .dockerignore, so setuptools-scm can't detect the
-# version. Pretend a version (matches the csrc-build stage convention).
-ENV SETUPTOOLS_SCM_PRETEND_VERSION="0.24.1.dev0+rocm.gfx1201"
+# version. Use the same version as the final wheel.
+ARG VLLM_PRETEND_VERSION
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=${VLLM_PRETEND_VERSION}
 
 COPY --from=csrc-build ${COMMON_WORKDIR}/vllm/dist /precompiled-wheels
 COPY --from=rust-build ${COMMON_WORKDIR}/vllm/vllm/vllm-rs ${COMMON_WORKDIR}/vllm/vllm/vllm-rs
