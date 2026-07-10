@@ -1,46 +1,58 @@
 # SPDX-License-Identifier: Apache-2.0
 # Full (non-copy) gfx1201 rebuild: compile aiter + vllm wheels from source.
 #
-# Reuses v0.24.0-base (already-built pytorch 2.11 / triton 3.6 / flash-attn
-# wheels) as the base, then *compiles* aiter and vllm from local source using
-# the upstream setup.py bdist_wheel flow — no Python-file overlaying.
+# Requires a pre-built base image (Dockerfile.rocm_base) containing
+# ROCm + PyTorch + Triton + FlashAttention.  Build the base first:
+#   docker build -f docker/Dockerfile.rocm_base -t vllm-rocm-base:local .
+#
+# VERSIONING — stable tag-based (no per-commit hash chasing):
+#   VLLM_BASE_VERSION = upstream version    (e.g. 0.25.0rc2)
+#   BUILD_VARIANT     = our branch/variant  (e.g. hvat-gfx1201-scratch)
+#   Wheel version     = {VLLM_BASE_VERSION}+{BUILD_VARIANT}.rocmXXX
+#                       (rocmXXX appended automatically by setup.py)
+#
+#   Git tag naming: {BUILD_VARIANT}_v{VLLM_BASE_VERSION}
 #
 # Build (context = the vllm source tree, with aiter as a sibling):
 #
 #   docker build -f docker/Dockerfile.gfx1201_full \
-#       -t vllm-openai-rocm:v0.24.0_gfx1201_v1 \
-#       --build-arg BASE_IMAGE=vllm/vllm-openai-rocm:v0.24.0-base \
+#       -t vllm-openai-rocm:hvat-gfx1201-scratch_v0.25.0rc2 \
+#       --build-arg BASE_IMAGE=vllm-rocm-base:local \
 #       --build-arg AITER_ROCM_ARCH="gfx942;gfx950;gfx1201" \
+#       --build-arg VLLM_BASE_VERSION=0.25.0rc2 \
+#       --build-arg BUILD_VARIANT=hvat-gfx1201-scratch \
 #       --progress=plain \
 #       /home/yangecool/WorkSpace/Code/vLLM-v4-Craft
 #
-# Git hash is auto-detected from the copied vllm/.git.
-# Override base version with: --build-arg VLLM_BASE_VERSION=0.24.0
+# Or:  bash docker/build_gfx1201_full.sh
 #
 # Wheel filename (example):
-#   vllm-0.24.0+rocm.gfx1201.aiter.hvat.git76d9eec2f-cp312-cp312-linux_x86_64.whl
-#
-# The context root contains both `aiter/` and `vllm/` (this Dockerfile lives
-# in vllm/docker/, so the context is one level above vllm/).
+#   vllm-0.25.0rc2+hvat-gfx1201-scratch.rocm723-cp312-cp312-linux_x86_64.whl
 
 ARG BASE_IMAGE=vllm/vllm-openai-rocm:v0.24.0-base
 ARG COMMON_WORKDIR=/app
 ARG AITER_ROCM_ARCH=gfx942;gfx950;gfx1201
 
-# Wheel version: vllm-{BASE}+rocm.gfx1201.aiter.hvat.git{hash}-cp312-...
-# Git hash is auto-detected from the copied vllm/.git at build time.
-ARG VLLM_BASE_VERSION=0.24.0
+# Wheel version: {VLLM_BASE_VERSION}+{BUILD_VARIANT}.rocmXXX
+ARG VLLM_BASE_VERSION=0.25.0rc2
+ARG BUILD_VARIANT=hvat-gfx1201-scratch
 
 ########################################################################
-# base — install build tools (uv, ccache, mold) on top of v0.24.0-base.
-# Mirrors Dockerfile.rocm's base stage but skips sccache (not needed here).
+# base — install build tools on top of the pre-built base image.
 ########################################################################
 FROM ${BASE_IMAGE} AS base
 
-ARG ARG_PYTORCH_ROCM_ARCH
-ENV PYTORCH_ROCM_ARCH=${ARG_PYTORCH_ROCM_ARCH:-${PYTORCH_ROCM_ARCH}}
+ARG PYTORCH_ROCM_ARCH
+ENV PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH:-${PYTORCH_ROCM_ARCH}}
 ARG AITER_ROCM_ARCH
 ENV AITER_ROCM_ARCH=${AITER_ROCM_ARCH}
+
+# ---- APT mirror (ctyun) ---------------------------------------------------
+RUN sed -i 's|http://archive.ubuntu.com|https://mirrors.ctyun.cn|g' /etc/apt/sources.list 2>/dev/null || true \
+    && if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+         sed -i 's|http://.*archive.ubuntu.com|https://mirrors.ctyun.cn|g' /etc/apt/sources.list.d/ubuntu.sources \
+         && sed -i 's|http://.*security.ubuntu.com|https://mirrors.ctyun.cn|g' /etc/apt/sources.list.d/ubuntu.sources; \
+       fi
 
 RUN apt-get update -q -y && apt-get install -q -y \
     sqlite3 libsqlite3-dev libfmt-dev libmsgpack-dev libsuitesparse-dev \
@@ -48,13 +60,7 @@ RUN apt-get update -q -y && apt-get install -q -y \
     libnuma-dev ccache mold \
     && rm -rf /var/lib/apt/lists/*
 
-# Remove sccache (preinstalled in v0.24.0-base with S3 config) — without S3
-# credentials it crashes every compile: "Server startup failed: PermissionDenied".
-# vllm setup.py auto-detects sccache via `which("sccache")` and wraps the
-# compiler as `-DCMAKE_CXX_COMPILER_LAUNCHER=sccache`. Two-pronged fix:
-#   1. VLLM_DISABLE_SCCACHE=1 — makes setup.py skip sccache even if the
-#      binary is still in PATH (e.g. from a cached base layer).
-#   2. rm the binary + clear S3 env vars as belt-and-suspenders.
+# Remove sccache (may be preinstalled in base image with S3 config).
 ENV VLLM_DISABLE_SCCACHE=1
 RUN apt-get purge -y sccache 2>/dev/null || true \
     && rm -f /usr/bin/sccache /bin/sccache /usr/local/bin/sccache \
@@ -65,9 +71,12 @@ ENV SCCACHE_ENDPOINT=
 ENV SCCACHE_S3_NO_CREDENTIALS=
 ENV SCCACHE_IDLE_TIMEOUT=
 
-RUN python3 -m pip install --upgrade pip
+# ---- PIP mirror (ctyun) ---------------------------------------------------
+RUN python3 -m pip install --upgrade pip \
+    && pip config set global.index-url https://mirrors.ctyun.cn/pypi/simple \
+    && pip config set global.trusted-host mirrors.ctyun.cn
 
-# UV (used by the upstream build stages for fast dependency install).
+# UV — fast pip.
 RUN curl -LsSf --retry 3 --retry-delay 5 https://astral.sh/uv/install.sh -o /tmp/uv-install.sh \
     && env UV_INSTALL_DIR="/usr/local/bin" sh /tmp/uv-install.sh \
     && rm -f /tmp/uv-install.sh \
@@ -86,7 +95,6 @@ ENV MAX_JOBS=${max_jobs}
 ########################################################################
 FROM base AS build_aiter
 
-# Proxy (BuildKit built-in ARGs, auto-injected from --build-arg HTTP_PROXY=...).
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG NO_PROXY
@@ -96,8 +104,6 @@ COPY aiter /app/aiter
 
 RUN pip uninstall -y amd-aiter aiter 2>/dev/null || true
 
-# git does NOT respect HTTP_PROXY. Set it explicitly so composable_kernel
-# submodule can clone through the proxy (use with --network=host).
 RUN if [ -n "$HTTP_PROXY" ]; then \
         git config --global http.proxy "$HTTP_PROXY" \
         && git config --global https.proxy "$HTTPS_PROXY"; \
@@ -105,14 +111,9 @@ RUN if [ -n "$HTTP_PROXY" ]; then \
 RUN cd /app/aiter \
     && git submodule update --init --recursive \
     && pip install -r requirements.txt
-# Build aiter wheel WITHOUT PREBUILD_KERNELS. PREBUILD_KERNELS=1 tries to
-# compile ALL CK/HIP modules at build time, but some CK kernels (e.g.
-# module_gemm_a8w8_blockscale_cktile) use gfx950-specific WMMA templates that
-# don't compile for gfx1201 → fatal build error.
-# Without PREBUILD, aiter ships a Python-only wheel and JIT-compiles each
-# kernel on first use at runtime (only for the kernels actually needed and
-# only for the live arch). The JIT cache persists in ~/.aiter.
-# GPU_ARCHS is still set so runtime JIT targets the right arch.
+
+# Without PREBUILD: JIT-compiles each kernel at runtime (avoids gfx950
+# WMMA templates that fail on gfx1201).
 RUN cd /app/aiter \
     && GPU_ARCHS=${AITER_ROCM_ARCH} \
        python3 setup.py bdist_wheel --dist-dir=dist \
@@ -120,32 +121,24 @@ RUN cd /app/aiter \
 RUN mkdir -p /app/install && cp /app/aiter/dist/*.whl /app/install/
 
 ########################################################################
-# fetch_vllm — local vllm source (REMOTE_VLLM=0 semantics: COPY, no clone).
+# fetch_vllm — local vllm source, write version string.
 ########################################################################
 FROM base AS fetch_vllm
 ARG COMMON_WORKDIR
 WORKDIR ${COMMON_WORKDIR}
 COPY vllm ${COMMON_WORKDIR}/vllm
 
-# Auto-detect git hash from copied vllm/.git (no git binary needed).
-# Writes version to /tmp/vllm_version for child stages to consume.
 ARG VLLM_BASE_VERSION
+ARG BUILD_VARIANT
 RUN cd ${COMMON_WORKDIR}/vllm \
-    && HASH=$(head -1 .git/HEAD | awk '{print $2}') \
-    && if [ -f ".git/$HASH" ]; then \
-         HASH=$(head -c 10 ".git/$HASH"); \
-       else \
-         HASH=$(echo "$HASH" | head -c 10); \
-       fi \
-    && echo "${VLLM_BASE_VERSION}+rocm.gfx1201.aiter.hvat.git${HASH}" > /tmp/vllm_version \
+    && echo "${VLLM_BASE_VERSION}+${BUILD_VARIANT}" > /tmp/vllm_version \
     && echo "vLLM version: $(cat /tmp/vllm_version)"
 
 ########################################################################
-# rust-build — compile the vllm-rs frontend (build_rust.sh installs rustup).
+# rust-build — compile the vllm-rs frontend.
 ########################################################################
 FROM fetch_vllm AS rust-build
 ARG COMMON_WORKDIR
-# Proxy (BuildKit built-in ARGs).
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG NO_PROXY
@@ -159,7 +152,24 @@ RUN /tmp/install_protoc.sh && rm /tmp/install_protoc.sh
 ENV CARGO_BUILD_JOBS=4
 ENV CARGO_NET_RETRY=10
 ENV RUSTUP_MAX_RETRIES=10
-# Read pre-computed version (git hash auto-detected in fetch_vllm).
+
+# ---- Rust mirror (rsproxy) + Go proxy -------------------------------------
+ENV RUSTUP_DIST_SERVER="https://rsproxy.cn"
+ENV RUSTUP_UPDATE_ROOT="https://rsproxy.cn/rustup"
+ENV GOPROXY="https://goproxy.cn,direct"
+RUN mkdir -p /root/.cargo && cat > /root/.cargo/config.toml <<'EOF'
+[source.crates-io]
+replace-with = 'rsproxy-sparse'
+[source.rsproxy]
+registry = "https://rsproxy.cn/crates.io-index"
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+[registries.rsproxy]
+index = "https://rsproxy.cn/crates.io-index"
+[net]
+git-fetch-with-cli = true
+EOF
+
 RUN --mount=type=cache,id=vllm-rocm-uv,target=/root/.cache/uv \
     cd ${COMMON_WORKDIR}/vllm \
     && export SETUPTOOLS_SCM_PRETEND_VERSION=$(cat /tmp/vllm_version) \
@@ -173,7 +183,7 @@ RUN --mount=type=cache,id=vllm-rocm-cargo-registry,target=/root/.cargo/registry,
     && test -x vllm/vllm-rs
 
 ########################################################################
-# csrc-build — compile vllm ROCm native (C++/HIP) extensions into a wheel.
+# csrc-build — compile vllm ROCm native extensions.
 ########################################################################
 FROM base AS csrc-build
 ARG COMMON_WORKDIR
@@ -206,8 +216,7 @@ RUN --mount=type=bind,source=vllm/pyproject.toml,target=${COMMON_WORKDIR}/vllm/p
     && ls dist/*.whl >/dev/null
 
 ########################################################################
-# build_vllm — assemble the full vllm wheel using the precompiled native
-# extension wheel + rust artifacts.
+# build_vllm — assemble full vllm wheel.
 ########################################################################
 FROM fetch_vllm AS build_vllm
 ARG COMMON_WORKDIR
@@ -230,14 +239,14 @@ RUN --mount=type=cache,id=vllm-rocm-uv,target=/root/.cache/uv \
     && ls dist/*.whl >/dev/null
 
 ########################################################################
-# final — install the freshly compiled aiter + vllm wheels.
+# final — install aiter + vllm wheels.
 ########################################################################
 FROM base AS final
 ARG COMMON_WORKDIR
 
 RUN python3 -m pip install --upgrade pip
 
-# Replace the gfx942;gfx950-only aiter with the gfx1201 rebuild.
+# Replace any pre-existing aiter with our gfx1201 build.
 RUN --mount=type=bind,from=build_aiter,src=/app/install,target=/aiter_install \
     pip uninstall -y amd-aiter aiter 2>/dev/null || true \
     && pip install /aiter_install/*.whl
@@ -248,20 +257,17 @@ RUN --mount=type=bind,from=build_vllm,src=${COMMON_WORKDIR}/vllm/dist,target=/vl
     pip uninstall -y vllm 2>/dev/null || true \
     && uv pip install --system /vllm_install/*.whl
 
-# Runtime env knobs (match upstream final stage).
+# Runtime environment (match upstream).
 ENV HSA_ENABLE_IPC_MODE_LEGACY=1
 ENV TOKENIZERS_PARALLELISM=false
 ENV SAFETENSORS_FAST_GPU=1
 ENV HIP_FORCE_DEV_KERNARG=1
-# Clear build-time env vars that would leak into runtime.
+ENV PYTORCH_NVML_BASED_CUDA_CHECK=1
+
+# Clear build-time env vars.
 ENV MAX_JOBS=
 ENV CCACHE_DIR=
 ENV CCACHE_COMPILERCHECK=
-ENV SCCACHE_BUCKET=
-ENV SCCACHE_REGION=
-ENV SCCACHE_ENDPOINT=
-ENV SCCACHE_S3_NO_CREDENTIALS=
-ENV SCCACHE_IDLE_TIMEOUT=
 
 WORKDIR ${COMMON_WORKDIR}/vllm
 ENTRYPOINT ["vllm", "serve"]
