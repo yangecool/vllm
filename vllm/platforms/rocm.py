@@ -77,7 +77,7 @@ _ROCM_DEVICE_ID_NAME_MAP: dict[str, str] = {
     "0x1586": "AMD_Radeon_8060S",  # gfx1151, Strix Halo
     # RDNA 4 discrete (Navi 48)
     "0x7550": "AMD_Radeon_RX9070XT",  # gfx1201
-    "0x7551": "AMD_Radeon_R9700",  # gfx1201
+    "0x7551": "AMD_Radeon_AI_PRO_R9600D",  # gfx1201, 48CU Navi 48
 }
 
 
