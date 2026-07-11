@@ -6,7 +6,7 @@
 #   docker build -f docker/Dockerfile.rocm_base -t vllm-rocm-base:local .
 #
 # VERSIONING — stable tag-based (no per-commit hash chasing):
-#   VLLM_BASE_VERSION = upstream version    (e.g. 0.25.0rc2)
+#   VLLM_BASE_VERSION = upstream version    (e.g. 0.25.0)
 #   BUILD_VARIANT     = our branch/variant  (e.g. hvat-gfx1201-scratch)
 #   Wheel version     = {VLLM_BASE_VERSION}+{BUILD_VARIANT}.rocmXXX
 #                       (rocmXXX appended automatically by setup.py)
@@ -16,10 +16,10 @@
 # Build (context = the vllm source tree, with aiter as a sibling):
 #
 #   docker build -f docker/Dockerfile.gfx1201_full \
-#       -t vllm-openai-rocm:hvat-gfx1201-scratch_v0.25.0rc2 \
+#       -t vllm-openai-rocm:hvat-gfx1201-scratch_v0.25.0 \
 #       --build-arg BASE_IMAGE=vllm-rocm-base:local \
 #       --build-arg AITER_ROCM_ARCH="gfx942;gfx950;gfx1201" \
-#       --build-arg VLLM_BASE_VERSION=0.25.0rc2 \
+#       --build-arg VLLM_BASE_VERSION=0.25.0 \
 #       --build-arg BUILD_VARIANT=hvat-gfx1201-scratch \
 #       --progress=plain \
 #       /home/yangecool/WorkSpace/Code/vLLM-v4-Craft
@@ -27,14 +27,14 @@
 # Or:  bash docker/build_gfx1201_full.sh
 #
 # Wheel filename (example):
-#   vllm-0.25.0rc2+hvat-gfx1201-scratch.rocm723-cp312-cp312-linux_x86_64.whl
+#   vllm-0.25.0+hvat-gfx1201-scratch.rocm723-cp312-cp312-linux_x86_64.whl
 
-ARG BASE_IMAGE=vllm/vllm-openai-rocm:v0.24.0-base
+ARG BASE_IMAGE=vllm/vllm-openai-rocm:v0.25.0-base
 ARG COMMON_WORKDIR=/app
 ARG AITER_ROCM_ARCH=gfx942;gfx950;gfx1201
 
 # Wheel version: {VLLM_BASE_VERSION}+{BUILD_VARIANT}.rocmXXX
-ARG VLLM_BASE_VERSION=0.25.0rc2
+ARG VLLM_BASE_VERSION=0.25.0
 ARG BUILD_VARIANT=hvat-gfx1201-scratch
 
 ########################################################################

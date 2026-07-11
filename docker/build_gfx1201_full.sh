@@ -24,7 +24,7 @@ WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 VLLM_DIR="${WORKSPACE_ROOT}/vllm"
 
 # ---- build args (overridable via env) ------------------------------------
-BASE_IMAGE="${BASE_IMAGE:-vllm/vllm-openai-rocm:v0.24.0-base}"
+BASE_IMAGE="${BASE_IMAGE:-vllm/vllm-openai-rocm:v0.25.0-base}"
 AITER_ROCM_ARCH="${AITER_ROCM_ARCH:-gfx1201}"
 PYTORCH_ROCM_ARCH="${PYTORCH_ROCM_ARCH:-gfx1201}"
 MAX_JOBS="${MAX_JOBS:-$(nproc)}"
@@ -45,7 +45,7 @@ if [ -z "${VLLM_BASE_VERSION:-}" ]; then
     if [ -n "${BUILT_TAG}" ]; then
         VLLM_BASE_VERSION="${BUILT_TAG##*_v}"
     else
-        VLLM_BASE_VERSION="0.25.0rc2"
+        VLLM_BASE_VERSION="0.25.0"
     fi
 fi
 
